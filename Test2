@@ -1,0 +1,402 @@
+<?php
+// config.php - SAML Configuration
+class SAMLConfig {
+    // Service Provider (SP) Configuration
+    const SP_ENTITY_ID = 'https://yourapp.com/metadata';
+    const SP_ACS_URL = 'https://yourapp.com/saml/acs';
+    const SP_SLS_URL = null; // No SLS support
+    
+    // Identity Provider (IdP) Configuration  
+    const IDP_ENTITY_ID = 'https://idp.company.com/metadata';
+    const IDP_SSO_URL = 'https://idp.company.com/sso';
+    const IDP_SLS_URL = null; // No SLS support
+    const IDP_X509_CERT = '-----BEGIN CERTIFICATE-----
+MIICXjCCAcegAwIBAgIJAKS0yb...your_idp_certificate_here...
+-----END CERTIFICATE-----';
+    
+    // SP Private Key and Certificate (for signing)
+    const SP_PRIVATE_KEY = '-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC...
+-----END PRIVATE KEY-----';
+    
+    const SP_X509_CERT = '-----BEGIN CERTIFICATE-----
+MIICXjCCAcegAwIBAgIJAKS0yb...your_sp_certificate_here...
+-----END CERTIFICATE-----';
+}
+
+// saml_utils.php - SAML Utility Functions
+class SAMLUtils {
+    
+    public static function generateID() {
+        return '_' . bin2hex(random_bytes(16));
+    }
+    
+    public static function generateTimestamp() {
+        return gmdate('Y-m-d\TH:i:s\Z');
+    }
+    
+    public static function base64UrlEncode($data) {
+        return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
+    }
+    
+    public static function base64UrlDecode($data) {
+        return base64_decode(str_pad(strtr($data, '-_', '+/'), strlen($data) % 4, '=', STR_PAD_RIGHT));
+    }
+    
+    public static function deflateAndEncode($xml) {
+        return base64_encode(gzdeflate($xml));
+    }
+    
+    public static function decodeAndInflate($data) {
+        return gzinflate(base64_decode($data));
+    }
+    
+    public static function signXML($xml, $privateKey) {
+        // Simple XML signing implementation
+        $canonicalXML = self::canonicalizeXML($xml);
+        $signature = '';
+        openssl_sign($canonicalXML, $signature, $privateKey, OPENSSL_ALGO_SHA256);
+        return base64_encode($signature);
+    }
+    
+    public static function verifyXMLSignature($xml, $signature, $publicKey) {
+        $canonicalXML = self::canonicalizeXML($xml);
+        return openssl_verify($canonicalXML, base64_decode($signature), $publicKey, OPENSSL_ALGO_SHA256) === 1;
+    }
+    
+    private static function canonicalizeXML($xml) {
+        // Basic XML canonicalization
+        $dom = new DOMDocument();
+        $dom->loadXML($xml);
+        return $dom->C14N();
+    }
+}
+
+// saml_request.php - SAML Authentication Request
+class SAMLAuthRequest {
+    
+    public static function generate($relayState = '') {
+        $id = SAMLUtils::generateID();
+        $timestamp = SAMLUtils::generateTimestamp();
+        
+        $xml = '<?xml version="1.0" encoding="UTF-8"?>
+
+<samlp:AuthnRequest
+xmlns:samlp=“urn:oasis:names:tc:SAML:2.0:protocol”
+xmlns:saml=“urn:oasis:names:tc:SAML:2.0:assertion”
+ID=”’ . $id . ‘”
+Version=“2.0”
+IssueInstant=”’ . $timestamp . ‘”
+Destination=”’ . SAMLConfig::IDP_SSO_URL . ‘”
+AssertionConsumerServiceURL=”’ . SAMLConfig::SP_ACS_URL . ‘”
+ProtocolBinding=“urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST”>
+<saml:Issuer>’ . SAMLConfig::SP_ENTITY_ID . ‘</saml:Issuer>
+<samlp:NameIDPolicy
+Format=“urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress”
+AllowCreate=“true”/>
+</samlp:AuthnRequest>’;
+
+```
+    return [
+        'id' => $id,
+        'xml' => $xml,
+        'encoded' => SAMLUtils::deflateAndEncode($xml)
+    ];
+}
+
+public static function redirect($relayState = '') {
+    $request = self::generate($relayState);
+    $params = [
+        'SAMLRequest' => $request['encoded']
+    ];
+    
+    if ($relayState) {
+        $params['RelayState'] = $relayState;
+    }
+    
+    $url = SAMLConfig::IDP_SSO_URL . '?' . http_build_query($params);
+    header('Location: ' . $url);
+    exit;
+}
+```
+
+}
+
+// saml_response.php - SAML Response Handler
+class SAMLResponseHandler {
+
+```
+public static function process() {
+    if (!isset($_POST['SAMLResponse'])) {
+        throw new Exception('No SAML Response found');
+    }
+    
+    $encodedResponse = $_POST['SAMLResponse'];
+    $relayState = $_POST['RelayState'] ?? '';
+    
+    // Decode the response
+    $xml = base64_decode($encodedResponse);
+    
+    // Parse the XML
+    $dom = new DOMDocument();
+    $dom->loadXML($xml);
+    
+    // Validate the response
+    self::validateResponse($dom);
+    
+    // Extract user attributes
+    $userAttributes = self::extractAttributes($dom);
+    
+    return [
+        'attributes' => $userAttributes,
+        'relayState' => $relayState
+    ];
+}
+
+private static function validateResponse($dom) {
+    $xpath = new DOMXPath($dom);
+    $xpath->registerNamespace('saml', 'urn:oasis:names:tc:SAML:2.0:assertion');
+    $xpath->registerNamespace('samlp', 'urn:oasis:names:tc:SAML:2.0:protocol');
+    
+    // Check status
+    $statusCode = $xpath->query('//samlp:StatusCode/@Value')->item(0);
+    if (!$statusCode || $statusCode->value !== 'urn:oasis:names:tc:SAML:2.0:status:Success') {
+        throw new Exception('SAML Authentication failed');
+    }
+    
+    // Validate timestamp
+    $assertion = $xpath->query('//saml:Assertion')->item(0);
+    if (!$assertion) {
+        throw new Exception('No assertion found in response');
+    }
+    
+    $notBefore = $xpath->query('.//saml:Conditions/@NotBefore', $assertion)->item(0);
+    $notOnOrAfter = $xpath->query('.//saml:Conditions/@NotOnOrAfter', $assertion)->item(0);
+    
+    $now = time();
+    if ($notBefore && strtotime($notBefore->value) > $now) {
+        throw new Exception('Assertion not yet valid');
+    }
+    
+    if ($notOnOrAfter && strtotime($notOnOrAfter->value) <= $now) {
+        throw new Exception('Assertion expired');
+    }
+    
+    // Validate audience
+    $audience = $xpath->query('.//saml:Audience', $assertion)->item(0);
+    if (!$audience || $audience->textContent !== SAMLConfig::SP_ENTITY_ID) {
+        throw new Exception('Invalid audience');
+    }
+    
+    // TODO: Verify signature if present
+    // In production, you should verify the XML signature
+    
+    return true;
+}
+
+private static function extractAttributes($dom) {
+    $xpath = new DOMXPath($dom);
+    $xpath->registerNamespace('saml', 'urn:oasis:names:tc:SAML:2.0:assertion');
+    
+    $attributes = [];
+    
+    // Extract NameID
+    $nameId = $xpath->query('//saml:NameID')->item(0);
+    if ($nameId) {
+        $attributes['NameID'] = $nameId->textContent;
+    }
+    
+    // Extract attribute statements
+    $attributeNodes = $xpath->query('//saml:Attribute');
+    foreach ($attributeNodes as $attributeNode) {
+        $name = $attributeNode->getAttribute('Name');
+        $values = [];
+        
+        $valueNodes = $xpath->query('.//saml:AttributeValue', $attributeNode);
+        foreach ($valueNodes as $valueNode) {
+            $values[] = $valueNode->textContent;
+        }
+        
+        $attributes[$name] = count($values) === 1 ? $values[0] : $values;
+    }
+    
+    return $attributes;
+}
+```
+
+}
+
+// logout_request.php - SAML Logout Request
+class SAMLLogoutRequest {
+
+```
+public static function generate($nameId, $sessionIndex = null) {
+    $id = SAMLUtils::generateID();
+    $timestamp = SAMLUtils::generateTimestamp();
+    
+    $xml = '<?xml version="1.0" encoding="UTF-8"?>
+```
+
+<samlp:LogoutRequest
+xmlns:samlp=“urn:oasis:names:tc:SAML:2.0:protocol”
+xmlns:saml=“urn:oasis:names:tc:SAML:2.0:assertion”
+ID=”’ . $id . ‘”
+Version=“2.0”
+IssueInstant=”’ . $timestamp . ‘”
+Destination=”’ . SAMLConfig::IDP_SLS_URL . ‘”>
+<saml:Issuer>’ . SAMLConfig::SP_ENTITY_ID . ‘</saml:Issuer>
+<saml:NameID Format=“urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress”>’ .
+htmlspecialchars($nameId) . ‘</saml:NameID>’;
+
+```
+    if ($sessionIndex) {
+        $xml .= '<samlp:SessionIndex>' . htmlspecialchars($sessionIndex) . '</samlp:SessionIndex>';
+    }
+    
+    $xml .= '</samlp:LogoutRequest>';
+    
+    return [
+        'id' => $id,
+        'xml' => $xml,
+        'encoded' => SAMLUtils::deflateAndEncode($xml)
+    ];
+}
+```
+
+}
+
+// session_manager.php - Session Management
+class SessionManager {
+
+```
+public static function startSession() {
+    if (session_status() === PHP_SESSION_NONE) {
+        session_start();
+    }
+}
+
+public static function login($userAttributes) {
+    self::startSession();
+    $_SESSION['saml_authenticated'] = true;
+    $_SESSION['saml_attributes'] = $userAttributes;
+    $_SESSION['saml_login_time'] = time();
+}
+
+public static function logout() {
+    self::startSession();
+    session_destroy();
+}
+
+public static function isAuthenticated() {
+    self::startSession();
+    return isset($_SESSION['saml_authenticated']) && $_SESSION['saml_authenticated'] === true;
+}
+
+public static function getUserAttributes() {
+    self::startSession();
+    return $_SESSION['saml_attributes'] ?? [];
+}
+
+public static function requireAuth() {
+    if (!self::isAuthenticated()) {
+        SAMLAuthRequest::redirect($_SERVER['REQUEST_URI']);
+    }
+}
+```
+
+}
+
+// index.php - Main application entry point
+session_start();
+
+try {
+// Handle SAML ACS (Assertion Consumer Service)
+if ($_SERVER[‘REQUEST_URI’] === ‘/saml/acs’ && $_SERVER[‘REQUEST_METHOD’] === ‘POST’) {
+$result = SAMLResponseHandler::process();
+SessionManager::login($result[‘attributes’]);
+
+```
+    // Redirect to relay state or home
+    $redirectUrl = $result['relayState'] ?: '/dashboard';
+    header('Location: ' . $redirectUrl);
+    exit;
+}
+
+// Handle logout (local only - no SLS)
+if ($_SERVER['REQUEST_URI'] === '/logout') {
+    SessionManager::logout();
+    
+    // Show logout confirmation with instructions
+    echo '<h1>Logged Out</h1>';
+    echo '<p>You have been logged out of this application.</p>';
+    echo '<p><strong>Note:</strong> You may still be logged into other applications. ';
+    echo 'To completely log out, please close your browser or log out from your company portal.</p>';
+    echo '<p><a href="/">Return to Home</a></p>';
+    exit;
+}
+
+// Handle login initiation
+if ($_SERVER['REQUEST_URI'] === '/login') {
+    SAMLAuthRequest::redirect('/dashboard');
+}
+
+// Protected dashboard
+if ($_SERVER['REQUEST_URI'] === '/dashboard') {
+    SessionManager::requireAuth();
+    $attributes = SessionManager::getUserAttributes();
+    
+    echo '<h1>Welcome to Your Dashboard</h1>';
+    echo '<p>Hello, ' . htmlspecialchars($attributes['NameID'] ?? 'User') . '</p>';
+    echo '<h2>Your Attributes:</h2>';
+    echo '<pre>' . htmlspecialchars(print_r($attributes, true)) . '</pre>';
+    echo '<a href="/logout">Logout</a>';
+    exit;
+}
+
+// Home page
+if (!SessionManager::isAuthenticated()) {
+    echo '<h1>Welcome</h1>';
+    echo '<p>Please <a href="/login">login</a> to continue.</p>';
+} else {
+    echo '<h1>Welcome Back</h1>';
+    echo '<p>You are already logged in. Go to <a href="/dashboard">dashboard</a>.</p>';
+    echo '<p><a href="/logout">Logout</a></p>';
+}
+```
+
+} catch (Exception $e) {
+error_log(’SAML Error: ’ . $e->getMessage());
+echo ‘<h1>Authentication Error</h1>’;
+echo ‘<p>An error occurred during authentication. Please try again.</p>’;
+echo ‘<a href="/login">Try Again</a>’;
+}
+?>
+
+<!-- metadata.php - SP Metadata Generation -->
+
+<?php
+// This should be in a separate file: metadata.php
+header('Content-Type: application/xml');
+echo '<?xml version="1.0" encoding="UTF-8"?>
+
+<md:EntityDescriptor
+xmlns:md=“urn:oasis:names:tc:SAML:2.0:metadata”
+entityID=”’ . SAMLConfig::SP_ENTITY_ID . ‘”>
+<md:SPSSODescriptor
+AuthnRequestsSigned=“false”
+WantAssertionsSigned=“true”
+protocolSupportEnumeration=“urn:oasis:names:tc:SAML:2.0:protocol”>
+<md:KeyDescriptor use=“signing”>
+<ds:KeyInfo xmlns:ds=“http://www.w3.org/2000/09/xmldsig#”>
+<ds:X509Data>
+<ds:X509Certificate>’ . preg_replace(’/—–[^-]+—–|\s/’, ‘’, SAMLConfig::SP_X509_CERT) . ‘</ds:X509Certificate>
+</ds:X509Data>
+</ds:KeyInfo>
+</md:KeyDescriptor>
+<md:AssertionConsumerService
+Binding=“urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST”
+Location=”’ . SAMLConfig::SP_ACS_URL . ‘”
+index=“1”/>
+</md:SPSSODescriptor>
+</md:EntityDescriptor>’;
+?>
