@@ -1,0 +1,113 @@
+可以。为了验证你的 SP 能成功发起 SAML 请求到 IdP 并收到 SAMLResponse，我们可以做一个最简单的测试程序：
+
+⸻
+
+✅ 目标：
+	•	手动发起 SAML 请求（AuthnRequest）
+	•	接收并打印出 IdP 返回的 SAMLResponse
+
+⸻
+
+🧱 项目结构（最小可运行）
+
+/saml-demo/
+├── index.php           ← 发起 SAML 登录请求
+├── acs.php             ← 处理并打印 IdP 的响应
+├── saml-settings.php   ← SAML 设置
+├── onelogin/           ← OneLogin SAML Toolkit 源码（无 Composer）
+
+
+⸻
+
+🔧 第一步：saml-settings.php
+
+<?php
+return [
+    'strict' => true,
+    'debug' => true,
+    'sp' => [
+        'entityId' => 'http://your-sp-domain/saml-demo/metadata',
+        'assertionConsumerService' => [
+            'url' => 'http://your-sp-domain/saml-demo/acs.php',
+            'binding' => 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST',
+        ],
+        'singleLogoutService' => [
+            'url' => 'http://your-sp-domain/saml-demo/logout',
+            'binding' => 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect',
+        ],
+        'NameIDFormat' => 'urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified',
+        'x509cert' => '',
+        'privateKey' => '',
+    ],
+    'idp' => [
+        'entityId' => 'https://idp.example.com/metadata',
+        'singleSignOnService' => [
+            'url' => 'https://idp.example.com/sso',
+            'binding' => 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect',
+        ],
+        'singleLogoutService' => [
+            'url' => 'https://idp.example.com/slo',
+            'binding' => 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect',
+        ],
+        'x509cert' => 'MIID...[your idp cert here]',
+    ],
+];
+
+
+⸻
+
+🔘 第二步：index.php（发起登录请求）
+
+<?php
+require_once __DIR__ . '/onelogin/autoload.php';
+
+use OneLogin\Saml2\Auth;
+
+$settings = require 'saml-settings.php';
+$auth = new Auth($settings);
+
+// 发起 AuthnRequest（浏览器会被重定向到 IdP）
+$auth->login();
+
+
+⸻
+
+📥 第三步：acs.php（接收并打印 SAMLResponse）
+
+<?php
+require_once __DIR__ . '/onelogin/autoload.php';
+
+use OneLogin\Saml2\Auth;
+
+$settings = require 'saml-settings.php';
+$auth = new Auth($settings);
+$auth->processResponse();
+
+$errors = $auth->getErrors();
+if (!empty($errors)) {
+    echo "验证失败：" . implode(', ', $errors);
+} else {
+    echo "<h2>认证成功！</h2>";
+    echo "<pre>";
+    print_r($auth->getAttributes());
+    echo "</pre>";
+}
+
+
+⸻
+
+🔁 补充说明
+	•	onelogin/ 是 OneLogin PHP SAML toolkit 的源码目录，你需要手动复制下来（不能用 Composer）
+	•	acs.php 是 IdP 的回调地址，要确保这个 URL 在 IdP 端的配置里是有效的 Assertion Consumer Service (ACS)
+
+⸻
+
+✅ 测试流程
+	1.	浏览器访问 http://your-sp-domain/saml-demo/index.php
+	2.	页面自动跳转到 IdP 登录
+	3.	登录后回调到 acs.php
+	4.	屏幕显示认证结果和属性
+
+⸻
+
+是否需要我为你手动打包一份可运行的 onelogin/ Toolkit 目录或给你最低依赖说明？
