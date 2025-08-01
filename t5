@@ -1,0 +1,30 @@
+明白了！你需要一个简化版的 login.php，它不显示账号密码输入框，而是只提供一个按钮，点击后触发 SAML SSO 登录流程。
+
+⸻
+
+✅ login.php（只含一个“使用SSO登录”按钮）
+
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>登录</title>
+</head>
+<body>
+    <h2>欢迎，请使用企业SSO登录</h2>
+
+    <form action="sso_login.php" method="post">
+        <button type="submit">使用 SSO 登录</button>
+    </form>
+</body>
+</html>
+
+
+⸻
+
+这个页面会将用户的请求发送到你项目中的 sso_login.php，该文件负责启动 SAML 2.0 登录流程（即：构造 AuthnRequest 并重定向到 IdP）。确保 sso_login.php 中调用了：
+
+$auth = new OneLogin\Saml2\Auth($settings);
+$auth->login();  // 发起 SAML 请求
+
+如果你还没写完 sso_login.php，我也可以给你一个标准版本。需要吗？
