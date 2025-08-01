@@ -1,1 +1,187 @@
+以下是一个不使用 Composer、纯手动加载类文件的 SAML 2.0 Service Provider (SP) 示例项目结构，适用于你当前的企业环境限制（不能用 Composer，也不能用 autoload.php）。
 
+⸻
+
+✅ 项目结构
+
+/your_project_root/
+│
+├── index.php                      # 默认首页，提示未登录或跳转到受保护资源
+├── dashboard.php                  # 登录成功后访问的页面
+├── login.php                      # 账号密码登录页面（可选）
+├── sso_login.php                  # 发起 SAML SSO 登录请求
+├── acs.php                        # Assertion Consumer Service（SAML 回调）
+├── logout.php                     # 用户主动登出（本地+SSO）
+│
+├── saml/
+│   ├── settings.php               # SAML 设置文件（SP 与 IdP 配置）
+│   ├── _toolkit_loader.php       # 手动引入所有 OneLogin 类（代替 Composer）
+│   └── lib/                       # OneLogin SAML PHP Toolkit 原始库（GitHub下载）
+│       └── Saml2/
+│           ├── Auth.php
+│           ├── Settings.php
+│           ├── Response.php
+│           ├── ...
+
+
+⸻
+
+✅ 各文件说明与关键代码
+
+⸻
+
+index.php（首页）
+
+<?php
+session_start();
+
+if (isset($_SESSION['samlUserdata'])) {
+    header('Location: dashboard.php');
+    exit;
+}
+
+echo '<a href="sso_login.php">使用SSO登录</a>';
+
+
+⸻
+
+sso_login.php（发起SSO）
+
+<?php
+require_once __DIR__ . '/saml/_toolkit_loader.php';
+require_once __DIR__ . '/saml/settings.php';
+
+$auth = new OneLogin\Saml2\Auth($settings);
+$auth->login(); // 自动跳转到 IdP
+
+
+⸻
+
+acs.php（Assertion Consumer Service）
+
+<?php
+session_start();
+require_once __DIR__ . '/saml/_toolkit_loader.php';
+require_once __DIR__ . '/saml/settings.php';
+
+$auth = new OneLogin\Saml2\Auth($settings);
+$auth->processResponse();
+
+$errors = $auth->getErrors();
+if (!empty($errors)) {
+    echo "认证失败: " . implode(', ', $errors);
+    exit;
+}
+
+if (!$auth->isAuthenticated()) {
+    echo "认证失败：未登录";
+    exit;
+}
+
+// 保存用户信息到 session
+$_SESSION['samlUserdata'] = $auth->getAttributes();
+$_SESSION['samlNameId'] = $auth->getNameId();
+
+header("Location: dashboard.php");
+exit;
+
+
+⸻
+
+dashboard.php（受保护页面）
+
+<?php
+session_start();
+
+if (!isset($_SESSION['samlUserdata'])) {
+    header("Location: index.php");
+    exit;
+}
+
+echo "<h1>SSO认证成功</h1>";
+echo "<p>欢迎您，" . htmlspecialchars($_SESSION['samlNameId']) . "</p>";
+echo "<pre>";
+print_r($_SESSION['samlUserdata']);
+echo "</pre>";
+echo '<a href="logout.php">注销</a>';
+
+
+⸻
+
+logout.php
+
+<?php
+session_start();
+$_SESSION = [];
+session_destroy();
+
+echo "您已退出。<br><a href=\"index.php\">返回首页</a>";
+
+
+⸻
+
+saml/settings.php（SAML 配置）
+
+<?php
+$settings = [
+    'strict' => true,
+    'debug' => true,
+    'sp' => [
+        'entityId' => 'http://yourdomain.com/metadata',
+        'assertionConsumerService' => [
+            'url' => 'http://yourdomain.com/acs.php',
+            'binding' => 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST',
+        ],
+        'singleLogoutService' => [
+            'url' => 'http://yourdomain.com/logout.php',
+            'binding' => 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect',
+        ],
+        'x509cert' => '',  // 可选：如不加密可以留空
+        'privateKey' => '', // 可选
+    ],
+    'idp' => [
+        'entityId' => 'https://idp.example.com/metadata',
+        'singleSignOnService' => [
+            'url' => 'https://idp.example.com/sso',
+            'binding' => 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect',
+        ],
+        'singleLogoutService' => [
+            'url' => 'https://idp.example.com/slo',
+            'binding' => 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect',
+        ],
+        'x509cert' => 'MIIC...（你的IdP提供的证书）',
+    ],
+];
+
+
+⸻
+
+saml/_toolkit_loader.php（手动加载类）
+
+<?php
+require_once __DIR__ . '/lib/Saml2/Constants.php';
+require_once __DIR__ . '/lib/Saml2/Error.php';
+require_once __DIR__ . '/lib/Saml2/Utils.php';
+require_once __DIR__ . '/lib/Saml2/Settings.php';
+require_once __DIR__ . '/lib/Saml2/Metadata.php';
+require_once __DIR__ . '/lib/Saml2/Auth.php';
+require_once __DIR__ . '/lib/Saml2/Response.php';
+require_once __DIR__ . '/lib/Saml2/LogoutRequest.php';
+require_once __DIR__ . '/lib/Saml2/LogoutResponse.php';
+require_once __DIR__ . '/lib/Saml2/IdPMetadataParser.php';
+
+
+⸻
+
+🔗 下载 OneLogin Toolkit
+
+从 GitHub 下载：
+👉 https://github.com/onelogin/php-saml
+
+将 /lib/Saml2/ 拷贝到你项目中的 saml/lib/Saml2/ 下。
+
+⸻
+
+如你有多个 IdP、动态配置、加密签名等高级需求，可以后续在此基础上扩展。
+
+是否要我打包一份可用的 .zip 模板供你下载测试？
