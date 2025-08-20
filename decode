@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Base64 解码器</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            padding: 20px;
+            background-color: #f4f4f4;
+        }
+        .container {
+            max-width: 800px;
+            margin: auto;
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+        }
+        textarea {
+            width: 100%;
+            height: 150px;
+            padding: 10px;
+            margin-bottom: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+            resize: vertical;
+        }
+        button {
+            display: block;
+            width: 100%;
+            padding: 10px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        #result {
+            margin-top: 20px;
+            padding: 15px;
+            border: 1px solid #ccc;
+            background-color: #f9f9f9;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Base64 解码器</h1>
+    <p>将 Base64 编码的字符串粘贴到下面的文本框中，然后点击“解码”按钮。</p>
+    <textarea id="encodedString" placeholder="在这里粘贴 Base64 字符串..."></textarea>
+    <button onclick="decodeBase64()">解码</button>
+    <h3>解码结果：</h3>
+    <div id="result"></div>
+</div>
+
+<script>
+    function decodeBase64() {
+        // 获取用户输入的 Base64 字符串
+        const encodedString = document.getElementById('encodedString').value;
+        const resultElement = document.getElementById('result');
+
+        // 如果输入为空，则直接返回
+        if (!encodedString.trim()) {
+            resultElement.innerText = '请输入要解码的字符串。';
+            return;
+        }
+
+        try {
+            // 使用 window.atob() 进行 Base64 解码
+            const decodedString = atob(encodedString);
+            
+            // 为了处理 UTF-8 编码的特殊字符，将解码结果转换为 URI 组件，然后再解码
+            // 这步对于处理包含非 ASCII 字符的 SAML XML 非常重要
+            const decodedResult = decodeURIComponent(escape(decodedString));
+
+            resultElement.innerText = decodedResult;
+
+        } catch (e) {
+            // 如果解码失败，显示错误信息
+            resultElement.innerText = '解码失败。请检查输入的字符串是否为有效的 Base64 格式。\n错误信息: ' + e.message;
+        }
+    }
+</script>
+
+</body>
+</html>
