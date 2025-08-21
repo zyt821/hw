@@ -1,59 +1,41 @@
 <?php
 // saml_handler.php
-// 这个脚本只处理 SAML 流程中的 POST 请求
 
-// 检查请求方法是否是 POST
-if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    // 如果不是 POST 请求，不处理任何 SAML 逻辑
-    // 返回 false 让 index.php 继续处理其他路由
-    return false;
-}
+// 启动会话
+session_start();
 
-// 检查是否收到了 SAML Response
-if (!isset($_POST['SAMLResponse'])) {
-    // 如果没有 SAML Response，也返回 false
-    return false;
-}
-
-// 加载 SAML 工具包和你的设置文件
-require_once 'path/to/php-saml/lib/onelogin/saml2/auth.php';
-require_once 'path/to/your/settings.php';
+// ...（前面的 SAML 验证和处理代码保持不变）...
 
 try {
-    // 实例化 SAML Auth 对象
     $auth = new OneLogin_Saml2_Auth($settings);
-    
-    // 处理 SAML Response。
-    // 如果验证失败，这里会抛出异常。
     $auth->processResponse();
     
-    // 如果验证通过，创建用户会话
     if ($auth->isAuthenticated()) {
-        $attributes = $auth->getAttributes();
-        // 在这里，你可以根据 $attributes 中的用户信息，创建你的本地会话
+        // 认证成功！
+        $_SESSION['sso_status'] = 'success';
+        $_SESSION['sso_message'] = 'SAML 登录成功！';
         
-        // 最后，将用户重定向到你的应用仪表盘或主页
+        // 重定向到主页
         header('Location: /dashboard.php');
         exit();
     } else {
-        // 如果认证失败但没有抛出异常，可以重定向回登录页
-        // 这通常是 SAML 库的内部错误
-        header('Location: /login.php?error=saml_auth_failed');
+        // 认证失败但没有异常，这种情况很少见
+        $_SESSION['sso_status'] = 'failure';
+        $_SESSION['sso_message'] = 'SAML 认证失败。';
+        
+        // 重定向回登录页
+        header('Location: /login.php');
         exit();
     }
 
 } catch (Exception $e) {
-    // 捕获所有 SAML 验证失败的异常
+    // 捕获异常，认证失败！
+    $_SESSION['sso_status'] = 'failure';
+    $_SESSION['sso_message'] = 'SAML 登录失败：' . $e->getMessage();
     
-    // 调试：打印出具体的错误信息
-    error_log("SAML Error: " . $e->getMessage());
-    
-    // 返回 400 Bad Request 状态码并显示错误信息给用户
+    // 返回 400 状态码并重定向回登录页
     http_response_code(400);
-    echo "<h1>SAML 登录失败</h1>";
-    echo "<p>错误信息: " . htmlspecialchars($e->getMessage()) . "</p>";
+    header('Location: /login.php');
     exit();
 }
-
-return true; // 返回 true 表示 SAML 流程已处理完成
 ?>
