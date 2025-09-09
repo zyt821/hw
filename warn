@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>离开确认示例</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            max-width: 800px;
+            margin: 0 auto;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: white;
+        }
+        .container {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 30px;
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 8px 32px rgba(31, 38, 135, 0.37);
+        }
+        .toggle-btn {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(76, 175, 80, 0.3);
+        }
+        .toggle-btn:hover {
+            background: #45a049;
+            transform: translateY(-2px);
+        }
+        .toggle-btn.disabled {
+            background: #f44336;
+            box-shadow: 0 4px 15px rgba(244, 67, 54, 0.3);
+        }
+        .toggle-btn.disabled:hover {
+            background: #da190b;
+        }
+        .status {
+            margin: 20px 0;
+            padding: 15px;
+            border-radius: 10px;
+            font-weight: bold;
+            text-align: center;
+            transition: all 0.3s ease;
+        }
+        .status.enabled {
+            background: rgba(76, 175, 80, 0.2);
+            border: 2px solid #4CAF50;
+        }
+        .status.disabled {
+            background: rgba(244, 67, 54, 0.2);
+            border: 2px solid #f44336;
+        }
+        .test-area {
+            margin-top: 30px;
+            padding: 20px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+        }
+        .test-link {
+            color: #64b5f6;
+            text-decoration: none;
+            padding: 8px 16px;
+            border: 2px solid #64b5f6;
+            border-radius: 20px;
+            display: inline-block;
+            margin: 10px;
+            transition: all 0.3s ease;
+        }
+        .test-link:hover {
+            background: #64b5f6;
+            color: white;
+        }
+        textarea {
+            width: 100%;
+            height: 100px;
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 8px;
+            border: none;
+            resize: vertical;
+            background: rgba(255, 255, 255, 0.9);
+            color: #333;
+        }
+        .code-block {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 15px;
+            border-radius: 8px;
+            margin: 10px 0;
+            font-family: 'Courier New', monospace;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚪 网站离开确认功能演示</h1>
+
+```
+    <div id="status" class="status disabled">
+        ❌ 离开确认已禁用
+    </div>
+    
+    <button id="toggleBtn" class="toggle-btn">启用离开确认</button>
+    
+    <div class="test-area">
+        <h3>📝 测试区域</h3>
+        <p>在下面的文本框中输入一些内容，然后尝试：</p>
+        <textarea placeholder="在这里输入一些内容来模拟表单数据..."></textarea>
+        
+        <h4>🔗 测试链接（启用确认后点击会有提示）：</h4>
+        <a href="https://www.baidu.com" class="test-link">百度</a>
+        <a href="https://www.google.com" class="test-link">Google</a>
+        
+        <h4>💡 如何测试：</h4>
+        <ol>
+            <li>点击"启用离开确认"按钮</li>
+            <li>在文本框中输入一些内容</li>
+            <li>尝试关闭浏览器标签页或刷新页面</li>
+            <li>或者点击上面的测试链接</li>
+        </ol>
+    </div>
+
+    <div class="code-block">
+        <h4>💻 核心代码：</h4>
+        <pre>
+```
+
+// 启用离开确认
+window.addEventListener(‘beforeunload’, function(e) {
+e.preventDefault();
+e.returnValue = ‘’; // Chrome需要设置returnValue
+return ‘您确定要离开此页面吗？未保存的更改将丢失。’;
+});
+
+// 移除离开确认
+window.removeEventListener(‘beforeunload’, handler);
+</pre>
+</div>
+</div>
+
+```
+<script>
+    let isConfirmEnabled = false;
+    let beforeunloadHandler = null;
+    
+    const toggleBtn = document.getElementById('toggleBtn');
+    const status = document.getElementById('status');
+    const textarea = document.querySelector('textarea');
+    
+    // 创建beforeunload处理函数
+    function createBeforeunloadHandler() {
+        return function(e) {
+            // 标准方式
+            e.preventDefault();
+            
+            // Chrome 需要设置 returnValue
+            e.returnValue = '';
+            
+            // 一些浏览器会显示这个消息（但现代浏览器通常显示默认消息）
+            return '您确定要离开此页面吗？您输入的数据可能不会被保存。';
+        };
+    }
+    
+    // 启用离开确认
+    function enableConfirm() {
+        if (!beforeunloadHandler) {
+            beforeunloadHandler = createBeforeunloadHandler();
+        }
+        
+        window.addEventListener('beforeunload', beforeunloadHandler);
+        
+        isConfirmEnabled = true;
+        toggleBtn.textContent = '禁用离开确认';
+        toggleBtn.classList.add('disabled');
+        status.textContent = '✅ 离开确认已启用 - 现在尝试关闭标签页或刷新页面';
+        status.className = 'status enabled';
+    }
+    
+    // 禁用离开确认
+    function disableConfirm() {
+        if (beforeunloadHandler) {
+            window.removeEventListener('beforeunload', beforeunloadHandler);
+        }
+        
+        isConfirmEnabled = false;
+        toggleBtn.textContent = '启用离开确认';
+        toggleBtn.classList.remove('disabled');
+        status.textContent = '❌ 离开确认已禁用';
+        status.className = 'status disabled';
+    }
+    
+    // 切换确认状态
+    toggleBtn.addEventListener('click', function() {
+        if (isConfirmEnabled) {
+            disableConfirm();
+        } else {
+            enableConfirm();
+        }
+    });
+    
+    // 当用户开始输入时自动启用确认
+    textarea.addEventListener('input', function() {
+        if (this.value.length > 0 && !isConfirmEnabled) {
+            enableConfirm();
+            // 显示提示
+            const hint = document.createElement('div');
+            hint.textContent = '💡 检测到输入内容，已自动启用离开确认保护';
+            hint.style.cssText = `
+                background: rgba(76, 175, 80, 0.2);
+                border: 2px solid #4CAF50;
+                padding: 10px;
+                border-radius: 8px;
+                margin: 10px 0;
+                text-align: center;
+                animation: fadeInOut 3s ease-in-out;
+            `;
+            this.parentNode.insertBefore(hint, this.nextSibling);
+            
+            // 3秒后移除提示
+            setTimeout(() => {
+                if (hint.parentNode) {
+                    hint.parentNode.removeChild(hint);
+                }
+            }, 3000);
+        }
+    });
+    
+    // 添加CSS动画
+    const style = document.createElement('style');
+    style.textContent = `
+        @keyframes fadeInOut {
+            0% { opacity: 0; transform: translateY(-10px); }
+            20% { opacity: 1; transform: translateY(0); }
+            80% { opacity: 1; transform: translateY(0); }
+            100% { opacity: 0; transform: translateY(-10px); }
+        }
+    `;
+    document.head.appendChild(style);
+</script>
+```
+
+</body>
+</html>
