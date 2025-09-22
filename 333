@@ -29,4 +29,92 @@ if (empty($task_id)) {
     exit;
 }
 
-$status_file = "task_status_
+$status_file = "task_status_" . $task_id . ".json";
+
+if (file_exists($status_file)) {
+    $data = json_decode(file_get_contents($status_file), true);
+    echo json_encode($data);
+} else {
+    echo json_encode([
+        'status' => 'not_found', 
+        'progress' => 0, 
+        'message' => '任务未找到'
+    ]);
+}
+?>
+
+<?php
+// ===============================
+// get_final_session.php - 获取最终会话ID
+// ===============================
+?>
+<?php
+$task_id = $_GET['task_id'] ?? '';
+if (empty($task_id)) {
+    echo "错误：缺少任务ID";
+    exit;
+}
+
+$final_session_file = "final_session_" . $task_id . ".txt";
+
+if (file_exists($final_session_file)) {
+    $session_id = file_get_contents($final_session_file);
+    echo trim($session_id);
+    // 清理文件
+    unlink($final_session_file);
+} else {
+    echo "错误：找不到会话ID";
+}
+?>
+
+<?php
+// ===============================
+// cleanup_temp_files.php - 清理临时文件（可以设置定时任务调用）
+// ===============================
+?>
+<?php
+// 清理超过24小时的临时文件
+function cleanupTempFiles() {
+    $temp_dir = __DIR__ . '/temp_uploads/';
+    $current_time = time();
+    
+    if (is_dir($temp_dir)) {
+        $files = glob($temp_dir . '*');
+        foreach ($files as $file) {
+            if (is_file($file) && ($current_time - filemtime($file)) > 86400) { // 24小时
+                unlink($file);
+            }
+        }
+    }
+    
+    // 清理状态文件
+    $status_files = glob(__DIR__ . '/task_status_*.json');
+    foreach ($status_files as $file) {
+        if (($current_time - filemtime($file)) > 86400) {
+            unlink($file);
+        }
+    }
+    
+    // 清理取消标志文件
+    $cancel_files = glob(__DIR__ . '/cancel_*.flag');
+    foreach ($cancel_files as $file) {
+        if (($current_time - filemtime($file)) > 86400) {
+            unlink($file);
+        }
+    }
+    
+    // 清理上传信息文件
+    $upload_info_files = glob(__DIR__ . '/upload_info_*.json');
+    foreach ($upload_info_files as $file) {
+        if (($current_time - filemtime($file)) > 86400) {
+            unlink($file);
+        }
+    }
+}
+
+// 如果直接调用此脚本
+if (basename(__FILE__) == basename($_SERVER["SCRIPT_FILENAME"])) {
+    cleanupTempFiles();
+    echo "临时文件清理完成";
+}
+?>
