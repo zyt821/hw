@@ -1,0 +1,32 @@
+<?php
+// ===============================
+// cancel_task.php - 取消任务
+// ===============================
+?>
+<?php
+if ($_POST['task_id']) {
+    $task_id = $_POST['task_id'];
+    $cancel_file = "cancel_" . $task_id . ".flag";
+    
+    // 创建取消标志文件
+    file_put_contents($cancel_file, time());
+    
+    echo "取消请求已发送";
+}
+?>
+
+<?php
+// ===============================
+// get_task_progress.php - 获取任务进度
+// ===============================
+?>
+<?php
+header('Content-Type: application/json');
+
+$task_id = $_GET['task_id'] ?? '';
+if (empty($task_id)) {
+    echo json_encode(['status' => 'error', 'message' => '缺少任务ID']);
+    exit;
+}
+
+$status_file = "task_status_
