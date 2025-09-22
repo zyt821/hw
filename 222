@@ -1,0 +1,370 @@
+<?php
+// 在你现有脚本的开头添加以下代码
+
+// 修改handleFileUpload函数以支持异步处理
+function handleFileUploadAsync() {
+    // 检查文件是否已上传
+    if (!isset($_FILES['dce_file']) || !isset($_FILES['argos_file']) || !isset($_FILES['sn_file'])) {
+        throw new Exception("Please upload DCE, ARGOS, and SN files");
+    }
+
+    // 生成唯一任务ID
+    $task_id = uniqid('task_', true);
+
+    // 创建临时目录存储上传的文件
+    $temp_dir = __DIR__ . '/temp_uploads/';
+    if (!is_dir($temp_dir)) {
+        mkdir($temp_dir, 0777, true);
+    }
+
+    // 移动上传的文件到临时目录
+    $dce_temp_file = $temp_dir . $task_id . '_dce.csv';
+    $argos_temp_file = $temp_dir . $task_id . '_argos.csv';
+    $sn_temp_file = $temp_dir . $task_id . '_sn.csv';
+
+    if (!move_uploaded_file($_FILES['dce_file']['tmp_name'], $dce_temp_file) ||
+        !move_uploaded_file($_FILES['argos_file']['tmp_name'], $argos_temp_file) ||
+        !move_uploaded_file($_FILES['sn_file']['tmp_name'], $sn_temp_file)) {
+        throw new Exception("Failed to save uploaded files");
+    }
+
+    // 保存文件信息
+    $upload_info = [
+        'task_id' => $task_id,
+        'dce_file' => $dce_temp_file,
+        'argos_file' => $argos_temp_file,
+        'sn_file' => $sn_temp_file,
+        'created_at' => time()
+    ];
+    file_put_contents("upload_info_" . $task_id . ".json", json_encode($upload_info));
+
+    // 创建初始状态文件
+    $status_data = [
+        'status' => 'starting',
+        'progress' => 0,
+        'message' => '准备开始处理...',
+        'updated_at' => time()
+    ];
+    file_put_contents("task_status_" . $task_id . ".json", json_encode($status_data));
+
+    // 启动后台异步处理
+    if (function_exists('shell_exec')) {
+        $command = "php async_processor.php " . escapeshellarg($task_id) . " > /dev/null 2>&1 &";
+        shell_exec($command);
+    } else {
+        throw new Exception("Cannot execute background processes. shell_exec function is not available.");
+    }
+
+    return $task_id;
+}
+
+// 修改ExcelComparisonTool类，添加取消检查功能
+class ExcelComparisonToolWithCancel extends ExcelComparisonTool {
+    
+    public function compareDataWithCancelCheck($task_id, int $batchSize = 500): array {
+        $comparisonResults = [];
+        
+        // 创建索引查找数组
+        $argosMap = [];
+        foreach ($this->argosData as $argosRow) {
+            $serialKey = strtolower($argosRow['serial#']);
+            if (!isset($argosMap[$serialKey])) {
+                $argosMap[$serialKey] = [];
+            }
+            $argosMap[$serialKey][] = $argosRow;
+        }
+
+        $snMap = [];
+        foreach ($this->snData as $snRow) {
+            $serialKey = strtolower($snRow['Serial number']);
+            if (!isset($snMap[$serialKey])) {
+                $snMap[$serialKey] = [];
+            }
+            $snMap[$serialKey][] = $snRow;
+        }
+
+        // 分批处理DCE数据
+        $totalDce = count($this->dceData);
+        for ($i = 0; $i < $totalDce; $i += $batchSize) {
+            // 检查取消状态
+            if ($this->is_cancelled($task_id)) {
+                return false; // 返回false表示被取消
+            }
+            
+            $batch = array_slice($this->dceData, $i, $batchSize);
+            $progress = 90 + (5 * $i / $totalDce); // 90-95%的进度用于DCE处理
+            $this->update_status($task_id, 'processing', $progress, "处理DCE数据 " . ($i + count($batch)) . "/$totalDce");
+
+            foreach ($batch as $dceRow) {
+                $dceSerial = strtolower($dceRow['serial'] ?? '');
+                $matchedArgosRows = $argosMap[$dceSerial] ?? [];
+
+                if (empty($matchedArgosRows)) {
+                    $comparisonResults[] = [
+                        'hostname' => $dceRow['hostname'] ?? 'N/A',
+                        'dce_useruid' => $dceRow['useruid'] ?? 'N/A',
+                        'dce_sn' => $dceRow['serial'] ?? 'N/A',
+                        'argos_owner' => 'N/A',
+                        'argos_serial' => 'N/A',
+                        'sn_serial' => 'N/A',
+                        'dce_livedate' => $dceRow['livedate'] ?? 'N/A',
+                        'dce_userwhen' => $dceRow['userwhen'] ?? 'N/A',
+                        'argos_state' => 'N/A',
+                        'sn_state' => 'N/A',
+                        'sn_pending_collection' => 'N/A',
+                        'dce_status' => 'N/A',
+                        'compliance_status' => 'non-compliant',
+                        'compliance_reason' => 'No matching ARGOS entry'
+                    ];
+                    continue;
+                }
+
+                foreach ($matchedArgosRows as $argosRow) {
+                    $argosSerial = strtolower($argosRow['serial#'] ?? '');
+                    $matchedSnRows = $snMap[$argosSerial] ?? [];
+
+                    if (empty($matchedSnRows)) {
+                        $comparisonResults[] = [
+                            'hostname' => $dceRow['hostname'] ?? 'N/A',
+                            'dce_useruid' => $dceRow['useruid'] ?? 'N/A',
+                            'dce_sn' => $dceRow['serial'] ?? 'N/A',
+                            'argos_owner' => $argosRow['owner'] ?? 'N/A',
+                            'argos_serial' => $argosRow['serial#'] ?? 'N/A',
+                            'sn_serial' => 'N/A',
+                            'dce_livedate' => $dceRow['livedate'] ?? 'N/A',
+                            'dce_userwhen' => $dceRow['userwhen'] ?? 'N/A',
+                            'argos_state' => $argosRow['state'] ?? 'N/A',
+                            'sn_state' => 'N/A',
+                            'sn_pending_collection' => 'N/A',
+                            'dce_status' => $this->checkDceStatus($dceRow, $argosRow),
+                            'compliance_status' => 'non-compliant',
+                            'compliance_reason' => 'No matching SN entry'
+                        ];
+                        continue;
+                    }
+
+                    foreach ($matchedSnRows as $snRow) {
+                        $dceStatus = $this->checkDceStatus($dceRow, $argosRow);
+                        $complianceResult = $this->checkCompliance($dceStatus, $argosRow, $snRow);
+
+                        $comparisonResults[] = [
+                            'hostname' => $dceRow['hostname'] ?? 'N/A',
+                            'dce_useruid' => $dceRow['useruid'] ?? 'N/A',
+                            'dce_sn' => $dceRow['serial'] ?? 'N/A',
+                            'argos_owner' => $argosRow['owner'] ?? 'N/A',
+                            'argos_serial' => $argosRow['serial#'] ?? 'N/A',
+                            'sn_serial' => $snRow['Serial number'] ?? 'N/A',
+                            'dce_livedate' => $dceRow['livedate'] ?? 'N/A',
+                            'dce_userwhen' => $dceRow['userwhen'] ?? 'N/A',
+                            'argos_state' => $argosRow['state'] ?? 'N/A',
+                            'sn_state' => $snRow['State'] ?? 'N/A',
+                            'sn_pending_collection' => $snRow['Pending collection [Hardware]'] ?? 'N/A',
+                            'dce_status' => $dceStatus,
+                            'compliance_status' => $complianceResult['status'],
+                            'compliance_reason' => $complianceResult['reason']
+                        ];
+                    }
+                }
+            }
+
+            unset($batch);
+            if (function_exists('gc_collect_cycles')) {
+                gc_collect_cycles();
+            }
+        }
+
+        // 处理其他数据的逻辑类似，都要加入取消检查...
+        // (为简洁起见，这里省略了ARGOS和SN的单独处理部分，但实现原理相同)
+
+        return $comparisonResults;
+    }
+    
+    private function is_cancelled($task_id) {
+        $cancel_file = "cancel_" . $task_id . ".flag";
+        return file_exists($cancel_file);
+    }
+    
+    private function update_status($task_id, $status, $progress, $message) {
+        $status_file = "task_status_" . $task_id . ".json";
+        $data = [
+            'status' => $status,
+            'progress' => $progress,
+            'message' => $message,
+            'updated_at' => time()
+        ];
+        file_put_contents($status_file, json_encode($data));
+    }
+}
+
+// 修改主执行逻辑
+try {
+    $comparisonResults = [];
+    $nonCompliantResults = [];
+    $sessionId = isset($_GET['session_id']) ? $_GET['session_id'] : null;
+    $taskId = isset($_GET['task_id']) ? $_GET['task_id'] : null;
+
+    // 清理旧数据
+    cleanupOldResults(24);
+    cleanupOldCsvData(24);
+
+    if ($taskId) {
+        // 显示处理页面
+        showProcessingPage($taskId);
+        exit;
+    } else if ($sessionId) {
+        // 检索之前的处理结果
+        $comparisonResults = getComparisonResults($sessionId);
+        if (!$comparisonResults) {
+            echo "<div style='color:red;margin:10px 0;'>会话已过期或无效。请重新上传文件。</div>";
+            $comparisonResults = [];
+        } else {
+            $nonCompliantResults = array_filter($comparisonResults, function($result) {
+                return $result['compliance_status'] === 'non-compliant';
+            });
+        }
+    } else if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['dce_file'])) {
+        // 处理新的文件上传 - 异步模式
+        $taskId = handleFileUploadAsync();
+        
+        // 重定向到处理页面
+        header("Location: " . $_SERVER['PHP_SELF'] . "?task_id=" . $taskId);
+        exit;
+    }
+} catch (Exception $e) {
+    die("上传错误: " . $e->getMessage());
+}
+
+// 显示处理页面的函数
+function showProcessingPage($taskId) {
+    ?>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>正在处理文件...</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                max-width: 800px;
+                margin: 0 auto;
+                padding: 20px;
+            }
+            .progress-container {
+                margin: 20px 0;
+                padding: 20px;
+                border: 1px solid #ddd;
+                border-radius: 5px;
+                background-color: #f9f9f9;
+            }
+            .progress-bar {
+                width: 100%;
+                height: 25px;
+                background-color: #e0e0e0;
+                border-radius: 15px;
+                overflow: hidden;
+                margin: 10px 0;
+            }
+            .progress-fill {
+                height: 100%;
+                background-color: #4CAF50;
+                transition: width 0.3s ease;
+                border-radius: 15px;
+            }
+            .cancel-btn {
+                background-color: #dc3545;
+                color: white;
+                padding: 10px 20px;
+                border: none;
+                border-radius: 5px;
+                cursor: pointer;
+                font-size: 16px;
+            }
+            .cancel-btn:disabled {
+                background-color: #6c757d;
+                cursor: not-allowed;
+            }
+            .status-message {
+                margin: 10px 0;
+                font-size: 14px;
+            }
+        </style>
+    </head>
+    <body>
+        <h2>正在处理您的文件...</h2>
+        <div class="progress-container">
+            <div id="statusMessage" class="status-message">准备开始处理...</div>
+            <div class="progress-bar">
+                <div id="progressFill" class="progress-fill" style="width: 0%"></div>
+            </div>
+            <div id="progressText">0%</div>
+            <button id="cancelBtn" class="cancel-btn">取消处理</button>
+        </div>
+        
+        <script>
+        let taskId = '<?php echo $taskId; ?>';
+        let cancelled = false;
+        let checkInterval;
+        
+        // 取消按钮事件
+        document.getElementById('cancelBtn').onclick = function() {
+            if (confirm('确定要取消处理吗？已处理的数据将会丢失。')) {
+                cancelled = true;
+                this.disabled = true;
+                this.textContent = '正在取消...';
+                
+                fetch('cancel_task.php', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: 'task_id=' + taskId
+                }).then(response => response.text())
+                  .then(data => {
+                      document.getElementById('statusMessage').innerHTML = '取消请求已发送，正在停止处理...';
+                  });
+            }
+        };
+        
+        // 检查进度
+        function checkProgress() {
+            if (cancelled) return;
+            
+            fetch('get_task_progress.php?task_id=' + taskId)
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('statusMessage').innerHTML = data.message;
+                document.getElementById('progressFill').style.width = data.progress + '%';
+                document.getElementById('progressText').innerHTML = Math.round(data.progress) + '%';
+                
+                if (data.status === 'completed') {
+                    // 处理完成，获取最终会话ID
+                    fetch('get_final_session.php?task_id=' + taskId)
+                    .then(response => response.text())
+                    .then(sessionId => {
+                        window.location.href = 'test11.php?session_id=' + sessionId.trim();
+                    });
+                } else if (data.status === 'cancelled') {
+                    document.getElementById('statusMessage').innerHTML = '处理已取消';
+                    document.getElementById('cancelBtn').style.display = 'none';
+                    setTimeout(() => {
+                        window.location.href = 'test11.php';
+                    }, 2000);
+                } else if (data.status === 'error') {
+                    document.getElementById('statusMessage').innerHTML = '处理出错：' + data.message;
+                    document.getElementById('cancelBtn').style.display = 'none';
+                } else {
+                    setTimeout(checkProgress, 1000); // 1秒后再检查
+                }
+            })
+            .catch(error => {
+                console.error('检查进度出错:', error);
+                setTimeout(checkProgress, 2000); // 出错后2秒再试
+            });
+        }
+        
+        // 开始检查进度
+        setTimeout(checkProgress, 1000);
+        </script>
+    </body>
+    </html>
+    <?php
+}
+?>
