@@ -1,0 +1,193 @@
+<?php
+// diagnostic.php - 诊断异步处理问题
+
+require_once 'your_database_functions.php'; // 替换为你的实际文件名
+
+echo "<h2>异步处理诊断工具</h2>\n";
+
+// 1. 检查最近的任务状态
+echo "<h3>1. 检查最近的任务状态</h3>\n";
+try {
+    $conn = connectToDatabase();
+    $result = $conn->query("SELECT * FROM task_status ORDER BY created_at DESC LIMIT 5");
+    
+    if ($result->num_rows > 0) {
+        echo "<table border='1'>\n";
+        echo "<tr><th>Task ID</th><th>Status</th><th>Progress</th><th>Message</th><th>Created</th><th>Updated</th></tr>\n";
+        while($row = $result->fetch_assoc()) {
+            echo "<tr>\n";
+            echo "<td>" . htmlspecialchars($row['task_id']) . "</td>\n";
+            echo "<td>" . htmlspecialchars($row['status']) . "</td>\n";
+            echo "<td>" . $row['progress'] . "%</td>\n";
+            echo "<td>" . htmlspecialchars($row['message']) . "</td>\n";
+            echo "<td>" . $row['created_at'] . "</td>\n";
+            echo "<td>" . $row['updated_at'] . "</td>\n";
+            echo "</tr>\n";
+        }
+        echo "</table>\n";
+    } else {
+        echo "没有找到任务记录\n";
+    }
+    $conn->close();
+} catch (Exception $e) {
+    echo "检查任务状态失败: " . $e->getMessage() . "\n";
+}
+
+// 2. 检查数据表中的记录数
+echo "<h3>2. 检查数据表记录数</h3>\n";
+$tables = ['dce_data', 'argos_data', 'sn_data'];
+
+foreach ($tables as $table) {
+    try {
+        $conn = connectToDatabase();
+        $result = $conn->query("SELECT session_id, COUNT(*) as count FROM $table GROUP BY session_id ORDER BY count DESC LIMIT 5");
+        
+        echo "<h4>$table 表:</h4>\n";
+        if ($result->num_rows > 0) {
+            echo "<table border='1'>\n";
+            echo "<tr><th>Session ID</th><th>Record Count</th></tr>\n";
+            while($row = $result->fetch_assoc()) {
+                echo "<tr><td>" . htmlspecialchars($row['session_id']) . "</td><td>" . $row['count'] . "</td></tr>\n";
+            }
+            echo "</table>\n";
+        } else {
+            echo "表中没有数据\n";
+        }
+        $conn->close();
+    } catch (Exception $e) {
+        echo "检查 $table 表失败: " . $e->getMessage() . "\n";
+    }
+}
+
+// 3. 测试数据库函数
+echo "<h3>3. 测试数据库函数</h3>\n";
+
+// 测试创建任务
+$test_task_id = 'diagnostic_test_' . time();
+$test_session_id = 'diagnostic_session_' . time();
+
+echo "测试任务ID: $test_task_id\n<br>";
+
+try {
+    // 测试创建任务
+    if (createTask($test_task_id, $test_session_id)) {
+        echo "✅ 创建任务成功\n<br>";
+        
+        // 测试获取任务状态
+        $status = getTaskStatus($test_task_id);
+        if ($status) {
+            echo "✅ 获取任务状态成功: " . $status['status'] . "\n<br>";
+            
+            // 测试更新任务状态
+            if (updateTaskStatus($test_task_id, 'processing', 50, '测试消息')) {
+                echo "✅ 更新任务状态成功\n<br>";
+                
+                // 测试取消任务
+                if (cancelTask($test_task_id)) {
+                    echo "✅ 取消任务成功\n<br>";
+                    
+                    // 测试检查取消状态
+                    if (isTaskCancelled($test_task_id)) {
+                        echo "✅ 检查取消状态成功\n<br>";
+                    } else {
+                        echo "❌ 检查取消状态失败\n<br>";
+                    }
+                } else {
+                    echo "❌ 取消任务失败\n<br>";
+                }
+            } else {
+                echo "❌ 更新任务状态失败\n<br>";
+            }
+        } else {
+            echo "❌ 获取任务状态失败\n<br>";
+        }
+        
+        // 清理测试数据
+        $conn = connectToDatabase();
+        $stmt = $conn->prepare("DELETE FROM task_status WHERE task_id = ?");
+        $stmt->bind_param("s", $test_task_id);
+        $stmt->execute();
+        $stmt->close();
+        $conn->close();
+        
+    } else {
+        echo "❌ 创建任务失败\n<br>";
+    }
+} catch (Exception $e) {
+    echo "❌ 测试数据库函数时出错: " . $e->getMessage() . "\n<br>";
+}
+
+// 4. 检查PHP配置
+echo "<h3>4. 检查PHP配置</h3>\n";
+echo "PHP版本: " . PHP_VERSION . "\n<br>";
+echo "内存限制: " . ini_get('memory_limit') . "\n<br>";
+echo "最大执行时间: " . ini_get('max_execution_time') . "\n<br>";
+echo "shell_exec函数: " . (function_exists('shell_exec') ? '可用' : '不可用') . "\n<br>";
+
+// 5. 测试异步脚本启动
+echo "<h3>5. 测试异步脚本启动</h3>\n";
+if (function_exists('shell_exec')) {
+    $test_command = "php --version";
+    $output = shell_exec($test_command);
+    if ($output) {
+        echo "✅ PHP CLI 可用\n<br>";
+        echo "输出: " . htmlspecialchars(substr($output, 0, 100)) . "\n<br>";
+    } else {
+        echo "❌ PHP CLI 不可用或shell_exec被禁用\n<br>";
+    }
+} else {
+    echo "❌ shell_exec函数不可用\n<br>";
+}
+
+// 6. 检查错误日志
+echo "<h3>6. 检查错误日志</h3>\n";
+$error_log_file = __DIR__ . '/async_processor_error.log';
+if (file_exists($error_log_file)) {
+    echo "错误日志文件存在: $error_log_file\n<br>";
+    $log_content = file_get_contents($error_log_file);
+    $last_lines = array_slice(explode("\n", $log_content), -10);
+    echo "最后10行日志:\n<br>";
+    echo "<pre>" . htmlspecialchars(implode("\n", $last_lines)) . "</pre>\n";
+} else {
+    echo "错误日志文件不存在\n<br>";
+}
+
+// 7. 手动测试数据加载
+echo "<h3>7. 手动测试数据加载</h3>\n";
+try {
+    // 获取最新的会话ID
+    $conn = connectToDatabase();
+    $result = $conn->query("SELECT session_id FROM dce_data ORDER BY created_at DESC LIMIT 1");
+    
+    if ($result->num_rows > 0) {
+        $row = $result->fetch_assoc();
+        $latest_session_id = $row['session_id'];
+        echo "最新会话ID: $latest_session_id\n<br>";
+        
+        // 尝试创建比较工具并加载数据
+        try {
+            $comparator = new ExcelComparisonTool();
+            $comparator->setSessionId($latest_session_id);
+            
+            $dce_data = $comparator->importDceFile();
+            echo "✅ 手动加载DCE数据成功，记录数: " . count($dce_data) . "\n<br>";
+            
+            if (count($dce_data) > 0) {
+                echo "DCE数据示例: " . json_encode(array_slice($dce_data, 0, 1)) . "\n<br>";
+            }
+            
+        } catch (Exception $e) {
+            echo "❌ 手动加载数据失败: " . $e->getMessage() . "\n<br>";
+        }
+    } else {
+        echo "没有找到DCE数据\n<br>";
+    }
+    $conn->close();
+    
+} catch (Exception $e) {
+    echo "手动测试数据加载失败: " . $e->getMessage() . "\n<br>";
+}
+
+echo "<h3>诊断完成</h3>\n";
+echo "请检查以上输出，找出可能的问题所在。\n<br>";
+?>
