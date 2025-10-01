@@ -1,0 +1,639 @@
+这是一个完整的异步化解决方案，包括了**后台运行**、**随时中断**和**实时进度显示**。你需要创建新的后台脚本 `run_comparison_job.php`，并修改 `ExcelComparisonTool.php` 和 `test11.php`。
+
+### 总结修改内容
+
+1.  **新建 SQL 表 `comparison_jobs`**: 用于存储任务状态、进度和取消标志（`is_cancellation_requested`）。
+2.  **修改 `ExcelComparisonTool.php`**: 增加 `setJobContext` 方法和内部的 `isCancellationRequested()`、`updateProgress()` 逻辑，并在 `compareData` 中添加检查点。
+3.  **新建 `run_comparison_job.php`**: 异步运行的核心脚本，它将启动 `ExcelComparisonTool::compareData`。
+4.  **修改 `test11.php`**:
+      * 将 **核心逻辑** 从 `handleFileUpload()` 移出，改为启动后台脚本。
+      * 添加 **JSON API** 接口 (`action=status`) 供前端查询进度。
+      * 添加 **AJAX 轮询 JavaScript** 来实时更新进度条。
+      * 添加 **取消任务** (`action=cancel`) 的逻辑。
+
+-----
+
+## 1\. 新建后台执行脚本 (`run_comparison_job.php`)
+
+这是您使用 `shell_exec` 在后台运行的脚本。它负责加载数据、执行比较，并不断更新数据库中的进度和状态。
+
+```php
+<?php
+// run_comparison_job.php
+
+// 引入主类和包含数据库连接函数的 test11.php
+require_once "ExcelComparisonTool.php";
+require_once "test11.php"; // 假设 connectToDatabase() 和 loadCsvDataFromDatabase() 等函数在 test11.php 中
+
+if (!isset($argv[1])) {
+    error_log("Error: Session ID not provided to background job.\n");
+    exit(1);
+}
+
+$sessionId = $argv[1];
+
+// --- 状态更新和检查辅助函数 (在 test11.php 中实现或直接写在这里) ---
+
+/**
+ * 更新作业状态、进度和错误信息。
+ */
+function updateJobStatus($conn, $sessionId, $status, $progress = null, $error = null) {
+    $sql = "UPDATE comparison_jobs SET status = ?";
+    $types = "s";
+    $params = [$status];
+
+    if ($progress !== null) {
+        $sql .= ", progress = ?";
+        $types .= "i";
+        $params[] = $progress;
+    }
+    if ($error !== null) {
+        $sql .= ", error_message = ?";
+        $types .= "s";
+        $params[] = $error;
+    }
+    if ($status === 'RUNNING' && is_null($progress)) {
+        $sql .= ", start_time = NOW()";
+    }
+    if ($status === 'COMPLETED' || $status === 'CANCELED' || $status === 'FAILED') {
+        $sql .= ", end_time = NOW(), progress = 100";
+    }
+
+    $sql .= " WHERE session_id = ?";
+    $params[] = $sessionId;
+
+    try {
+        $stmt = $conn->prepare($sql);
+        $stmt->bind_param($types . "s", ...$params);
+        $stmt->execute();
+        $stmt->close();
+    } catch (Exception $e) {
+        // 严重错误：无法更新数据库
+        error_log("Failed to update job status for $sessionId: " . $e->getMessage());
+    }
+}
+
+// -------------------------------------------------------------------
+// --- 主执行逻辑 ---
+// -------------------------------------------------------------------
+$conn = null;
+try {
+    $conn = connectToDatabase();
+    updateJobStatus($conn, $sessionId, 'RUNNING', 1); // 开始运行，进度1%
+
+    $comparator = new ExcelComparisonTool();
+    $comparator->setSessionId($sessionId);
+
+    // 1. 从数据库加载数据
+    $comparator->importDceFile();
+    $comparator->importArgosFile();
+    $comparator->importSnFile();
+    
+    // 2. 清理数据
+    $comparator->cleanAllData();
+
+    // 3. 设置作业上下文（传递DB连接和Session ID）
+    // NOTE: ExcelComparisonTool::setJobContext 必须是修改后的版本
+    $totalRecords = count($comparator->dceData) + count($comparator->argosData) + count($comparator->snData);
+    $comparator->setJobContext($conn, $totalRecords); 
+    
+    // 4. 执行比较 (比较方法会负责更新进度和检查中断)
+    $comparisonResults = $comparator->compareData();
+
+    // 5. 保存结果
+    // NOTE: storeComparisonResults 必须修改，使用 $sessionId 作为 session_id
+    saveResultsToDatabase($comparisonResults);
+    
+    // 将比较结果存储到 temp_comparison_results，使用本次作业的 $sessionId
+    storeComparisonResultsBySession($comparisonResults, $sessionId); 
+
+    // 6. 最终状态更新
+    updateJobStatus($conn, $sessionId, 'COMPLETED', 100);
+
+    // 可选：清理本次作业的 CSV 数据
+    cleanupOldCsvData(0.01); 
+
+    $conn->close();
+
+} catch (Exception $e) {
+    if ($conn === null) {
+         // 尝试重新连接数据库以记录错误
+         $conn = connectToDatabase();
+    }
+    
+    $errorMessage = $e->getMessage();
+    
+    // 检查是否为用户取消
+    if (strpos($errorMessage, 'canceled by user') !== false) {
+        updateJobStatus($conn, $sessionId, 'CANCELED', 100);
+    } else {
+        updateJobStatus($conn, $sessionId, 'FAILED', null, $errorMessage);
+        error_log("Job $sessionId FAILED: " . $errorMessage);
+    }
+    
+    if ($conn) $conn->close();
+    exit(1);
+}
+
+// -------------------------------------------------------------------
+// 修正 storeComparisonResults 的辅助函数，以便可以使用指定的 session ID
+// -------------------------------------------------------------------
+function storeComparisonResultsBySession($results, $sessionId) {
+    try {
+        $conn = connectToDatabase();
+        $serializedResults = json_encode($results);
+        // 假设 temp_comparison_results 表有 session_id 和 result_data 字段
+        $stmt = $conn->prepare("INSERT INTO temp_comparison_results (session_id, result_data) VALUES (?, ?)");
+        $stmt->bind_param("ss", $sessionId, $serializedResults);
+
+        if (!$stmt->execute()) {
+            throw new Exception("Failed to store comparison results: " . $stmt->error);
+        }
+
+        $stmt->close();
+        $conn->close();
+
+        return $sessionId;
+    } catch (Exception $e) {
+        error_log("Database error in storeComparisonResultsBySession: " . $e->getMessage());
+        return false;
+    }
+}
+?>
+```
+
+-----
+
+## 2\. 修改核心类 (`ExcelComparisonTool.php`)
+
+添加用于状态控制的属性和方法，并在耗时操作 `compareData` 中添加检查点。
+
+```php
+// ExcelComparisonTool.php (Modified)
+
+class ExcelComparisonTool {
+    private $dceData = [];
+    private $argosData = [];
+    private $snData = [];
+    private $comparisonResults = [];
+    private $sessionId = '';
+    
+    // --- NEW: Job Context Properties ---
+    private $dbConn = null; // 用于存储DB连接
+    private $totalRecordsToProcess = 0; // 用于进度计算
+    private $totalSteps = 4; // 比较步骤数
+    // --- END NEW ---
+
+    // set unique session id
+    public function setSessionId($sessionId) {
+        $this->sessionId = $sessionId;
+        return $this;
+    }
+    
+    // --- NEW: Method to set job context ---
+    public function setJobContext($conn, $totalRecords) {
+        $this->dbConn = $conn;
+        $this->totalRecordsToProcess = $totalRecords;
+        return $this;
+    }
+    // --- END NEW ---
+
+    // ... (existing import methods: importDceFile, importArgosFile, importSnFile) ...
+
+    // --- NEW: Internal method to check cancellation ---
+    private function isCancellationRequested() {
+        if (!$this->dbConn || !$this->sessionId) {
+            return false;
+        }
+
+        try {
+            // 注意：这里必须使用 $this->dbConn，而不是重新 connectToDatabase()
+            $stmt = $this->dbConn->prepare("SELECT is_cancellation_requested FROM comparison_jobs WHERE session_id = ?");
+            $stmt->bind_param("s", $this->sessionId);
+            $stmt->execute();
+            $stmt->bind_result($isCanceled);
+            $stmt->fetch();
+            $stmt->close();
+            return (bool)$isCanceled;
+        } catch (Exception $e) {
+            error_log("In-class cancellation check failed: " . $e->getMessage());
+            return false;
+        }
+    }
+    // --- END NEW ---
+    
+    // --- NEW: Internal method to update progress ---
+    private function updateProgress($currentStep) {
+        if (!$this->dbConn || !$this->sessionId) {
+            return;
+        }
+        
+        $progress = min(99, floor(($currentStep / $this->totalSteps) * 90) + 10); // 10% for setup, 90% for 4 steps
+        
+        try {
+            $stmt = $this->dbConn->prepare("UPDATE comparison_jobs SET progress = ? WHERE session_id = ? AND is_cancellation_requested = FALSE");
+            $stmt->bind_param("is", $progress, $this->sessionId);
+            $stmt->execute();
+            $stmt->close();
+        } catch (Exception $e) {
+            error_log("In-class progress update failed: " . $e->getMessage());
+        }
+    }
+    // --- END NEW ---
+
+
+    /**
+     * Compare data in batches to optimize memory usage
+     * @param int $batchSize Number of records to process in each batch
+     * @return array Complete comparison results
+     */
+    public function compareData(int $batchSize = 1000): array {
+        $comparisonResults = [];
+        $currentStep = 0; 
+        $this->totalSteps = 4; // Step 1: Indexing, 2: DCE Loop, 3: ARGOS Loop, 4: SN Loop
+
+        // Step 1: Create indexed lookup arrays for faster searching
+        $currentStep = 1;
+        $this->updateProgress($currentStep); 
+        if ($this->isCancellationRequested()) {
+            throw new Exception("Comparison canceled by user.");
+        }
+        // ... (rest of Step 1 logic) ...
+        
+        // Step 2: Process DCE data in batches
+        $currentStep = 2;
+        $this->updateProgress($currentStep);
+        $totalDce = count($this->dceData);
+        for ($i = 0; $i < $totalDce; $i += $batchSize) {
+            if ($this->isCancellationRequested()) {
+                throw new Exception("Comparison canceled by user.");
+            }
+            // ... (rest of Step 2 logic) ...
+        }
+
+        // Step 3: Process ARGOS records not in DCE (in batches)
+        $currentStep = 3;
+        $this->updateProgress($currentStep);
+        $totalArgos = count($this->argosData);
+        for ($i = 0; $i < $totalArgos; $i += $batchSize) {
+            if ($this->isCancellationRequested()) {
+                throw new Exception("Comparison canceled by user.");
+            }
+            // ... (rest of Step 3 logic) ...
+        }
+
+        // Step 4: Process SN records not in DCE or ARGOS (in batches)
+        $currentStep = 4;
+        $this->updateProgress($currentStep);
+        $totalSn = count($this->snData);
+        for ($i = 0; $i < $totalSn; $i += $batchSize) {
+            if ($this->isCancellationRequested()) {
+                throw new Exception("Comparison canceled by user.");
+            }
+            // ... (rest of Step 4 logic) ...
+        }
+
+        $this->comparisonResults = $comparisonResults;
+        return $comparisonResults;
+    }
+    
+    // ... (rest of existing methods) ...
+}
+```
+
+-----
+
+## 3\. 修改前端控制脚本 (`test11.php`)
+
+`test11.php` 需要处理 AJAX 状态查询、取消请求，并将文件上传后的同步处理改为异步启动。
+
+### A. 在 `test11.php` 顶部添加异步相关函数和路由
+
+在 `test11.php` 文件的顶部，`session_start();` 之后，添加以下内容：
+
+```php
+// test11.php (Top section - near connectToDatabase)
+
+// ... existing functions: connectToDatabase, storeCsvDataToDatabase, loadCsvDataFromDatabase, etc.
+
+// --- NEW: Job Status, Cancellation, and Start Functions ---
+
+function getJobStatus($sessionId) {
+    try {
+        $conn = connectToDatabase();
+        $stmt = $conn->prepare("SELECT status, progress, error_message FROM comparison_jobs WHERE session_id = ?");
+        $stmt->bind_param("s", $sessionId);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $job = $result->fetch_assoc();
+        $stmt->close();
+        $conn->close();
+        return $job;
+    } catch (Exception $e) {
+        error_log("Failed to get job status: " . $e->getMessage());
+        return null;
+    }
+}
+
+function requestJobCancellation($sessionId) {
+    try {
+        $conn = connectToDatabase();
+        // Set cancellation flag only if the job is running
+        $stmt = $conn->prepare("UPDATE comparison_jobs SET is_cancellation_requested = TRUE WHERE session_id = ? AND status IN ('PENDING', 'RUNNING')");
+        $stmt->bind_param("s", $sessionId);
+        $stmt->execute();
+        $stmt->close();
+        $conn->close();
+        return true;
+    } catch (Exception $e) {
+        error_log("Failed to request cancellation: " . $e->getMessage());
+        return false;
+    }
+}
+
+function createNewJob($sessionId) {
+    try {
+        $conn = connectToDatabase();
+        $stmt = $conn->prepare("INSERT INTO comparison_jobs (session_id, status, progress) VALUES (?, 'PENDING', 0)");
+        $stmt->bind_param("s", $sessionId);
+        $stmt->execute();
+        $stmt->close();
+        $conn->close();
+        return true;
+    } catch (Exception $e) {
+        error_log("Failed to create new job: " . $e->getMessage());
+        return false;
+    }
+}
+
+function startBackgroundJob($sessionId) {
+    // 假设 PHP CLI 可执行文件在 /usr/bin/php 或 /usr/local/bin/php
+    $phpPath = 'php'; // 默认在 PATH 中查找
+    $scriptPath = realpath('run_comparison_job.php');
+    
+    if (!$scriptPath) {
+        throw new Exception("Cannot find run_comparison_job.php. Check file path.");
+    }
+    
+    // 使用 exec 启动后台进程，将 stdout 和 stderr 重定向到 /dev/null，并使用 & 符号实现后台运行
+    // 这是一个非阻塞的调用。
+    $command = "$phpPath $scriptPath " . escapeshellarg($sessionId) . " > /dev/null 2>&1 &";
+    
+    // 使用 exec 而非 shell_exec 来避免等待，尽管 shell_exec 后面加 & 也可以实现类似效果
+    // 为了确保是非阻塞的，这里使用 exec 配合后台符号
+    exec($command);
+}
+
+// -------------------------------------------------------------------
+// NEW: Handle JSON Status Request (AJAX API)
+// -------------------------------------------------------------------
+if (isset($_GET['action']) && $_GET['action'] === 'status' && isset($_GET['session_id'])) {
+    $jobStatus = getJobStatus($_GET['session_id']);
+    header('Content-Type: application/json');
+    if ($jobStatus) {
+        echo json_encode(['success' => true, 'data' => $jobStatus]);
+    } else {
+        echo json_encode(['success' => false, 'message' => 'Job not found']);
+    }
+    exit;
+}
+
+// -------------------------------------------------------------------
+// NEW: Handle Cancellation Request
+// -------------------------------------------------------------------
+if (isset($_GET['action']) && $_GET['action'] === 'cancel' && isset($_GET['session_id'])) {
+    requestJobCancellation($_GET['session_id']);
+    // 重定向回状态页，显示取消中的状态
+    header("Location: test11.php?session_id=" . $_GET['session_id']);
+    exit;
+}
+
+// ... (rest of the existing code) ...
+```
+
+### B. 修改 `handleFileUpload()` (异步启动)
+
+修改 `handleFileUpload` 函数，它现在只负责**上传文件、保存 CSV 数据到数据库**，然后返回 Session ID。**移除**所有 `compareData` 和结果存储的逻辑。
+
+```php
+// test11.php (Modified handleFileUpload function)
+
+function handleFileUpload() {
+    // check if the file has uploaded
+    // ... (existing file check and session ID generation) ...
+    $sessionId = uniqid('upload_', true);
+
+    try {
+        // ... (existing DCE file reading and storeCsvDataToDatabase) ...
+        // ... (existing ARGOS file reading and storeCsvDataToDatabase) ...
+        // ... (existing SN file reading and storeCsvDataToDatabase) ...
+
+        // --- NEW: Asynchronous Logic ---
+        
+        // 1. 创建作业记录
+        createNewJob($sessionId);
+        
+        // 2. 异步启动后台进程
+        startBackgroundJob($sessionId);
+        
+        // 3. 返回 session ID，用于重定向到状态页
+        return ['sessionId' => $sessionId];
+        
+    } catch (Exception $e) {
+        throw new Exception("handling errors: " . $e->getMessage());
+    }
+}
+```
+
+### C. 修改主执行逻辑 (处理异步流)
+
+在 `test11.php` 的主 `try-catch` 块中，更新逻辑以处理作业状态。
+
+```php
+// test11.php (Modified Main Try-Catch Block)
+
+try {
+    $comparisonResults = [];
+    $nonCompliantResults = [];
+    $sessionId = isset($_GET['session_id']) ? $_GET['session_id'] : null;
+    $jobStatus = null; // NEW
+
+    // clear old data（24hrs）
+    cleanupOldResults(24);
+    cleanupOldCsvData(24);
+
+    if ($sessionId) {
+        // 1. 获取作业状态
+        $jobStatus = getJobStatus($sessionId); // NEW
+        
+        if (!$jobStatus) {
+             echo "<div style='color:red;margin:10px 0;'>Job not found or invalid session. Please upload files again.</div>";
+             $sessionId = null;
+        } else if ($jobStatus['status'] === 'COMPLETED' || $jobStatus['status'] === 'CANCELED' || $jobStatus['status'] === 'FAILED') {
+            // 2. 如果作业完成、取消或失败，则加载结果 (COMPLETED 状态才加载)
+            if ($jobStatus['status'] === 'COMPLETED') {
+                $comparisonResults = getComparisonResults($sessionId);
+            }
+            
+            if (!$comparisonResults) {
+                // Session expired or results cleaned up
+                if ($jobStatus['status'] === 'COMPLETED') {
+                    echo "<div style='color:orange;margin:10px 0;'>Results for this session are no longer available in temporary storage.</div>";
+                }
+                $comparisonResults = [];
+            }
+            
+            // Filter non-compliant items for display
+            $nonCompliantResults = array_filter($comparisonResults, function($result) {
+                return $result['compliance_status'] === 'non-compliant';
+            });
+            
+        } 
+        // 3. 如果状态是 PENDING 或 RUNNING，则 $comparisonResults 保持为空，等待 AJAX 更新。
+        
+    } else if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['dce_file'])) {
+		
+		if (isset($_SESSION['comparison_results'])) {
+			unset($_SESSION['comparison_results']);
+		}
+		
+        // Processing new file uploads (now only saves data and starts job)
+        $result = handleFileUpload(); // Now returns ['sessionId' => ...]
+
+        $sessionId = $result['sessionId'];
+
+        // Redirects to the job status page
+        header("Location: test11.php?session_id=" . $sessionId);
+        exit;
+    }
+} catch (Exception $e) {
+    die("Upload Error: " . $e->getMessage());
+}
+// ... (rest of the existing code) ...
+```
+
+### D. 修改 HTML 视图 (添加状态和 AJAX 轮询)
+
+在 `test11.php` 的 **`<body>`** 标签中，紧接在 `<h2>Compare results</h2>` 之后，添加以下 **状态显示区域**：
+
+```html
+<h2>Compare results</h2>
+
+<?php 
+// Determine if a job status box should be shown
+$isJobRunningOrPending = $jobStatus && ($jobStatus['status'] === 'RUNNING' || $jobStatus['status'] === 'PENDING');
+$showJobStatusBox = $jobStatus && ($isJobRunningOrPending || $jobStatus['status'] === 'CANCELED' || $jobStatus['status'] === 'FAILED');
+
+if ($showJobStatusBox): 
+?>
+    <div class="job-status-box" style="margin: 20px 0; padding: 15px; border: 1px solid <?= ($jobStatus['status'] === 'COMPLETED' ? 'green' : ($jobStatus['status'] === 'RUNNING' || $jobStatus['status'] === 'PENDING' ? 'blue' : 'red')) ?>; background-color: #f0f0f0;">
+        <h3>Job Status for Session ID: <?= htmlspecialchars($sessionId) ?></h3>
+        <p><strong>Status:</strong> <span class="status-text" style="font-weight: bold; color: <?= ($jobStatus['status'] === 'COMPLETED' ? 'green' : ($jobStatus['status'] === 'RUNNING' || $jobStatus['status'] === 'PENDING' ? 'blue' : 'red')) ?>;"><?= htmlspecialchars($jobStatus['status']) ?></span></p>
+        
+        <?php if ($isJobRunningOrPending): ?>
+            <p class="progress-text"><strong>Progress:</strong> <?= htmlspecialchars($jobStatus['progress']) ?>%</p>
+            <progress value="<?= htmlspecialchars($jobStatus['progress']) ?>" max="100" style="width: 100%;"></progress>
+            <p style="margin-top: 10px;"><a href="?action=cancel&session_id=<?= $sessionId ?>" class="non-compliant-btn" style="width: 100px; background-color: #dc3545; display: inline-block;">Cancel Job</a></p>
+            <p style="margin-top: 10px;">The comparison is running in the background. **This page will update automatically**.</p>
+        <?php elseif ($jobStatus['status'] === 'FAILED'): ?>
+            <p style="color: red;"><strong>Error:</strong> <?= htmlspecialchars($jobStatus['error_message']) ?></p>
+            <a href="index.html" class="return-btn" style="width: 190px;">Return to upload page</a>
+        <?php elseif ($jobStatus['status'] === 'CANCELED'): ?>
+            <p style="color: orange;">Job was canceled by user.</p>
+            <a href="index.html" class="return-btn" style="width: 190px;">Return to upload page</a>
+        <?php endif; ?>
+    </div>
+<?php endif; ?>
+
+```
+
+**同时，** 在 **`</body>`** 标签关闭之前，添加 **AJAX 轮询脚本**：
+
+```html
+<?php if ($isJobRunningOrPending): // Only run script if job is PENDING or RUNNING ?>
+<script>
+    const sessionId = '<?= htmlspecialchars($sessionId) ?>';
+    const statusUrl = `test11.php?action=status&session_id=${sessionId}`;
+    const statusText = document.querySelector('.status-text');
+    const progressBar = document.querySelector('progress');
+    const progressText = document.querySelector('.progress-text');
+    
+    function checkStatus() {
+        fetch(statusUrl)
+            .then(response => response.json())
+            .then(data => {
+                if (data.success && data.data) {
+                    const status = data.data.status;
+                    const progress = data.data.progress;
+                    
+                    // Update UI
+                    statusText.textContent = status;
+                    if (progressBar) progressBar.value = progress;
+                    if (progressText) progressText.textContent = `Progress: ${progress}%`;
+
+                    // Check for terminal states (job finished or stopped)
+                    if (status === 'COMPLETED' || status === 'CANCELED' || status === 'FAILED') {
+                        clearInterval(pollingInterval);
+                        // Redirect to the same page URL to load the final result/error message
+                        window.location.href = `test11.php?session_id=${sessionId}`;
+                    }
+                } else {
+                    clearInterval(pollingInterval);
+                    // Handle API failure if needed
+                }
+            })
+            .catch(error => {
+                console.error('Error fetching status:', error);
+                clearInterval(pollingInterval);
+            });
+    }
+
+    // Start polling every 2 seconds
+    const pollingInterval = setInterval(checkStatus, 2000); 
+    checkStatus(); // Initial check
+
+</script>
+<?php endif; ?>
+
+</body>
+</html>
+```
+
+-----
+
+## 4\. 调整视图逻辑
+
+由于现在有了状态显示框，您需要修改原始的 **All Results View** 的 `else` 块，确保在作业正在运行时不显示空表格，而是显示等待信息。
+
+**修改 `test11.php` 中的 `<?php else: ?>` 块：**
+
+```html
+<?php else: ?>
+    <div class="action-btns">
+        <a href="index.html" class="return-btn">Return to upload page</a>
+        <?php 
+        // Only show Export button if job is completed AND results exist
+        if (isset($sessionId) && $sessionId && $jobStatus && $jobStatus['status'] === 'COMPLETED'): ?>
+            <a href="?export=non_compliant&session_id=<?= $sessionId ?>" class="export-btn">Export Results</a>
+        <?php endif; ?>
+    </div>
+    
+    <?php if ($isJobRunningOrPending): ?>
+        <p style="margin-top: 20px; font-weight: bold;">Comparison is in progress. Please wait for the page to refresh...</p>
+        
+    <?php elseif ($jobStatus && ($jobStatus['status'] === 'CANCELED' || $jobStatus['status'] === 'FAILED')): ?>
+        <p style="margin-top: 20px; color: red;">Job terminated. No results to display.</p>
+
+    <?php else: ?>
+        <div class="tabs">
+            <a href="test11.php?session_id=<?= $sessionId ?>" class="active">All Results</a>
+            <a href="?view=non_compliant&session_id=<?= $sessionId ?>">Non-Compliant Results</a>
+            <a href="?view=records<?= isset($sessionId) ? '&session_id='.$sessionId : '' ?>">Database Records</a>
+        </div>
+        <p>This run returns: <?= count($comparisonResults) ?> records in total</p>
+        <table class="result-table">
+            </table>
+    <?php endif; ?>
+
+<?php endif; ?>
+```
