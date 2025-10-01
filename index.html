@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Excel File Comparison Tool</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        .upload-form {
+            background-color: #f4f4f4;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        input[type="file"] {
+            margin-bottom: 10px;
+            width: 100%;
+            padding: 5px;
+        }
+        .upload-form label {
+            display: block;
+            margin-top: 10px;
+            font-weight: bold;
+        }
+        input[type="submit"] {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        input[type="submit"]:hover {
+            background-color: #45a049;
+        }
+    </style>
+</head>
+<body>
+<div class="upload-form">
+    <h2>Excel File Comparison Tool</h2>
+    <form action="test11.php" method="POST" enctype="multipart/form-data">
+        <!--(containing hostname, livedate, username, useruid, hardware, SN#) -->
+        <label>DCE File:</label>
+        <input type="file" name="dce_file" accept=".csv" required>
+
+        <!-- (containing hostname, serial#, type, model, owner, state) -->
+        <label>ARGOS File :</label>
+        <input type="file" name="argos_file" accept=".xlsx" required>
+
+        <label>Service Now File :</label>
+        <input type="file" name="sn_file" accept=".xlsx" required>
+        <input type="submit" value="Upload and Compare">
+    </form>
+</div>
+</body>
+</html>
