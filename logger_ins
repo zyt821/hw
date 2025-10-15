@@ -1,0 +1,50 @@
+快速实施清单
+1. 创建3个新文件
+
+Logger.php - 日志类（第一个artifact）
+admin_logs.php - 管理员界面（第二个artifact）
+clear_logs.php - 清空日志脚本（第三个artifact）
+
+2. 创建logs目录
+bashmkdir logs
+chmod 755 logs
+3. 修改你的主脚本 (test11.php)
+在顶部添加：
+php<?php
+session_start();
+require_once 'Logger.php';
+$logger = new Logger(__DIR__ . '/logs');
+然后在关键操作处添加日志记录，比如：
+php// 文件上传成功时
+$logger->info(Logger::TYPE_UPLOAD, '文件上传成功', 
+    ['files' => $sessionId]);
+
+// 出错时
+$logger->error(Logger::TYPE_UPLOAD, '文件上传失败: ' . $e->getMessage());
+4. 修改异步处理脚本 (async_processor.php)
+添加：
+phprequire_once 'Logger.php';
+$logger = new Logger(__DIR__ . '/logs');
+
+$logger->info(Logger::TYPE_PROCESS, '异步处理开始', ['task_id' => $task_id]);
+5. 修改管理员密码
+在 admin_logs.php 中找到这一行：
+phpif ($_POST['admin_password'] === 'your_admin_password') {
+```
+
+改成你自己的强密码。
+
+## 系统特性
+
+- **文件日志** - 每日自动生成 `app_YYYY-MM-DD.log`
+- **数据库日志** - 同时保存到数据库（可选）
+- **6种日志级别** - DEBUG, INFO, WARNING, ERROR, CRITICAL
+- **6种日志类型** - UPLOAD, PROCESS, DATABASE, SYSTEM, USER, SECURITY
+- **管理员界面** - 美观的日志查看和筛选
+- **自动清理** - 30天后自动删除旧日志
+
+## 访问管理员界面
+```
+http://你的域名/admin_logs.php
+输入你设置的密码即可查看所有日志。
+这个系统会完整记录所有错误、操作过程和重要事件，帮助你快速定位问题。
