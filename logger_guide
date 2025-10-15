@@ -1,0 +1,334 @@
+# 日志系统集成指南
+
+## 文件清单
+
+你需要创建或修改以下文件：
+
+### 新建文件
+1. `Logger.php` - 日志类
+2. `admin_logs.php` - 管理员查看界面
+3. `clear_logs.php` - 清空日志脚本
+
+### 需要修改的文件
+1. `test11.php` - 主脚本
+2. `async_processor.php` - 异步处理脚本
+
+## 第一步：创建数据库表
+
+在你的数据库中执行：
+
+```sql
+CREATE TABLE IF NOT EXISTS application_logs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    timestamp DATETIME NOT NULL,
+    level VARCHAR(20) NOT NULL,
+    type VARCHAR(50) NOT NULL,
+    message TEXT NOT NULL,
+    data JSON,
+    user_id VARCHAR(50),
+    ip VARCHAR(45),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_timestamp (timestamp),
+    INDEX idx_level (level),
+    INDEX idx_type (type)
+);
+```
+
+## 第二步：创建logs目录
+
+在你的项目根目录创建：
+```bash
+mkdir logs
+chmod 755 logs
+```
+
+## 第三步：在主脚本中使用Logger
+
+在 `test11.php` 顶部添加：
+
+```php
+<?php
+session_start();
+require_once 'Logger.php';
+
+// 初始化日志系统
+$logger = new Logger(__DIR__ . '/logs');
+
+// 在所有关键操作后记录日志
+```
+
+### 使用示例
+
+#### 记录文件上传
+```php
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['dce_file'])) {
+    try {
+        // ... 你现有的上传逻辑 ...
+        
+        $logger->info(
+            Logger::TYPE_UPLOAD,
+            '文件上传成功',
+            [
+                'dce_file' => $_FILES['dce_file']['name'],
+                'argos_file' => $_FILES['argos_file']['name'],
+                'sn_file' => $_FILES['sn_file']['name'],
+                'session_id' => $sessionId
+            ],
+            $_SESSION['user_id'] ?? null
+        );
+        
+    } catch (Exception $e) {
+        $logger->error(
+            Logger::TYPE_UPLOAD,
+            '文件上传失败: ' . $e->getMessage(),
+            ['error' => $e->getMessage()],
+            $_SESSION['user_id'] ?? null
+        );
+    }
+}
+```
+
+#### 记录数据库操作
+```php
+try {
+    $conn = connectToDatabase();
+    // ... 数据库操作 ...
+    
+    $logger->info(
+        Logger::TYPE_DATABASE,
+        'CSV数据已存储',
+        [
+            'table' => 'dce_data',
+            'rows' => count($dceData),
+            'session_id' => $session_id
+        ]
+    );
+    
+    $conn->close();
+} catch (Exception $e) {
+    $logger->error(
+        Logger::TYPE_DATABASE,
+        '数据库操作失败: ' . $e->getMessage(),
+        ['error' => $e->getMessage()]
+    );
+}
+```
+
+#### 记录任务处理
+```php
+// 在 async_processor.php 中
+$logger->info(
+    Logger::TYPE_PROCESS,
+    '开始处理文件',
+    [
+        'task_id' => $task_id,
+        'session_id' => $session_id
+    ]
+);
+
+$logger->info(
+    Logger::TYPE_PROCESS,
+    'DCE数据加载完成',
+    [
+        'record_count' => count($dce_data),
+        'progress' => 40
+    ]
+);
+
+// 发生错误时
+$logger->error(
+    Logger::TYPE_PROCESS,
+    '数据比较失败: ' . $e->getMessage(),
+    [
+        'task_id' => $task_id,
+        'error' => $e->getMessage()
+    ]
+);
+```
+
+#### 记录系统事件
+```php
+$logger->warning(
+    Logger::TYPE_SYSTEM,
+    '内存使用过高',
+    [
+        'memory_usage' => memory_get_usage(true),
+        'memory_limit' => ini_get('memory_limit')
+    ]
+);
+
+$logger->critical(
+    Logger::TYPE_SYSTEM,
+    '系统错误',
+    ['error' => $critical_error]
+);
+```
+
+#### 记录用户操作
+```php
+$logger->info(
+    Logger::TYPE_USER,
+    '用户查看结果',
+    [
+        'session_id' => $sessionId,
+        'non_compliant_count' => count($nonCompliantResults)
+    ],
+    $_SESSION['user_id'] ?? null
+);
+```
+
+## 第四步：修改异步处理脚本
+
+在 `async_processor.php` 中使用日志：
+
+```php
+<?php
+require_once 'Logger.php';
+require_once 'test11.php';
+
+$logger = new Logger(__DIR__ . '/logs');
+
+try {
+    $logger->info(Logger::TYPE_PROCESS, '异步处理开始', ['task_id' => $task_id]);
+    
+    // ... 处理逻辑 ...
+    
+    $logger->info(Logger::TYPE_PROCESS, '处理完成', ['task_id' => $task_id]);
+    
+} catch (Exception $e) {
+    $logger->critical(Logger::TYPE_PROCESS, '处理失败: ' . $e->getMessage(), 
+        ['task_id' => $task_id, 'error' => $e->getMessage()]);
+}
+?>
+```
+
+## 第五步：访问管理员界面
+
+### URL
+```
+http://your-domain.com/admin_logs.php
+```
+
+### 默认密码
+编辑 `admin_logs.php` 中的这一行：
+```php
+if ($_POST['admin_password'] === 'your_admin_password') {
+```
+
+改为你自己的强密码：
+```php
+if ($_POST['admin_password'] === 'SuperSecurePassword123!') {
+```
+
+## 日志级别说明
+
+| 级别 | 说明 | 颜色 |
+|------|------|------|
+| DEBUG | 调试信息 | 灰色 |
+| INFO | 正常操作信息 | 蓝色 |
+| WARNING | 警告信息 | 黄色 |
+| ERROR | 错误信息 | 红色 |
+| CRITICAL | 严重错误 | 深红 |
+
+## 日志类型说明
+
+| 类型 | 说明 | 用途 |
+|------|------|------|
+| UPLOAD | 文件上传 | 记录上传操作 |
+| PROCESS | 数据处理 | 记录异步处理过程 |
+| DATABASE | 数据库操作 | 记录数据库交互 |
+| SYSTEM | 系统事件 | 记录系统级问题 |
+| USER | 用户操作 | 记录用户交互 |
+| SECURITY | 安全事件 | 记录安全相关操作 |
+
+## 管理员界面功能
+
+### 查看日志
+- 按日期选择
+- 按级别筛选
+- 按类型筛选
+- 选择数据源（文件或数据库）
+
+### 统计信息
+- 总日志数
+- 错误数
+- 警告数
+- 数据源显示
+
+### 日志详情
+- 时间戳
+- 级别和类型
+- 消息内容
+- 用户和IP信息
+- 相关数据
+
+### 维护操作
+- 清空日志
+- 自动清理旧日志
+
+## 自动清理旧日志
+
+在 `test11.php` 中添加定期清理：
+
+```php
+// 初始化Logger后添加
+$logger->cleanup_old_logs(30); // 清理30天前的日志
+```
+
+或设置cron定时任务：
+```bash
+# 每天凌晨2点清理
+0 2 * * * /usr/bin/php /path/to/project/cleanup_logs.php
+```
+
+### cleanup_logs.php
+```php
+<?php
+require_once 'Logger.php';
+
+$logger = new Logger(__DIR__ . '/logs');
+$deleted = $logger->cleanup_old_logs(30);
+echo "清理了 $deleted 个日志文件";
+?>
+```
+
+## 性能建议
+
+### 大数据量情况
+- 定期备份日志
+- 定期清理旧日志
+- 考虑使用数据库作为主要存储
+
+### 查询优化
+```sql
+-- 查询今天的错误
+SELECT * FROM application_logs 
+WHERE DATE(timestamp) = CURDATE() 
+AND level IN ('ERROR', 'CRITICAL')
+ORDER BY timestamp DESC;
+
+-- 查询特定类型的操作
+SELECT * FROM application_logs 
+WHERE type = 'PROCESS' 
+AND timestamp > DATE_SUB(NOW(), INTERVAL 1 HOUR)
+ORDER BY timestamp DESC;
+```
+
+## 故障排除
+
+### 日志没有保存
+1. 检查 `logs/` 目录权限
+2. 检查数据库连接
+3. 查看PHP错误日志
+
+### 无法访问管理员界面
+1. 检查密码设置
+2. 检查session是否启用
+3. 查看浏览器console错误
+
+### 数据库日志未保存
+1. 检查数据库连接
+2. 检查表是否创建
+3. 查看数据库权限
+
+这个日志系统可以帮助你全面监控应用程序的运行状态，发现和解决问题。
